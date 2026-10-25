@@ -149,7 +149,7 @@ jobs:
 
     - name: Restore KF6 cache
       id: kf6-cache
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: ~/kf6-install
         # The Qt version is part of the key: KF6 uses Qt private API, so it must
@@ -273,6 +273,15 @@ jobs:
         echo "✅ KF6 present; Kirigami QML root: $KF6_QML_DIR"
         echo "- **KF6**: ${KF6_VERSION#v} built from source (x86_64)" >> $GITHUB_STEP_SUMMARY
 
+    # Saved right after KF6 is verified, not at the end of the job, so a later
+    # failure (bundle checks, signing) does not throw the ~30 minute KF6 build away.
+    - name: Save KF6 cache
+      if: steps.kf6-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/kf6-install
+        key: kf6-${{ env.KF6_VERSION }}-qt${{ env.QT_VERSION }}-macos-15-intel-x86_64-v1
+
     - name: Set version information
       run: |
         # Read the full release string (it carries any beta/alpha suffix); project()
@@ -369,6 +378,15 @@ jobs:
           -libpath="$KF6_PREFIX/lib" \
           -verbose=1 \
           || echo "macdeployqt completed with warnings"
+
+        # The official Qt ships SQL drivers for ODBC and Mimer, and macdeployqt
+        # bundles them. They link vendor libraries that exist on no user's Mac
+        # (/opt/homebrew/opt/libiodbc, /usr/local/lib/libmimerapi: run 2 failed
+        # the self-contained check on exactly these two). Katalog uses SQLite
+        # and MySQL/MariaDB only, so the unused drivers are removed.
+        for unused_driver in libqsqlodbc.dylib libqsqlmimer.dylib; do
+          rm -f "qt_quick/Katalog.app/Contents/PlugIns/sqldrivers/$unused_driver"
+        done
 
         QML_DIR="qt_quick/Katalog.app/Contents/Resources/qml"
         if [ -d "$QML_DIR" ]; then
