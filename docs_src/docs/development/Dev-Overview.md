@@ -37,6 +37,7 @@ GitHub workflows:
 
 - [Katalog 3 Linux qt6_AppImage](https://github.com/StephaneCouturier/Katalog/actions/workflows/Katalog_3_Build_linux_qt6_appimage.yml)
 - [Katalog 3 macOS](https://github.com/StephaneCouturier/Katalog/actions/workflows/Katalog_3_Build_macOS.yml)
+- [Katalog 3 macOS Intel](https://github.com/StephaneCouturier/Katalog/actions/workflows/Katalog_3_Build_macOS_intel.yml)
 - [Katalog 2 Linux qt6_AppImage](https://github.com/StephaneCouturier/Katalog/actions/workflows/Katalog_2_Build_linux_qt6_appimage.yml)
 - [Katalog 2 Linux qt5_AppImage](https://github.com/StephaneCouturier/Katalog/actions/workflows/Katalog_2_Build_linux_qt5_appimage.yml)
 - [Katalog 2 macOS](https://github.com/StephaneCouturier/Katalog/actions/workflows/Katalog_2_Build_macOS.yml)

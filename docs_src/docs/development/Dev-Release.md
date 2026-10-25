@@ -58,7 +58,7 @@ Functional updates
 - [ ] No pre-release marker left: search `beta` / `alpha` case-insensitively in version strings and every user-visible text (translated or not), e.g. dialog titles
 - [ ] Database schema version, if the schema changed (see [SpecVersions](SpecVersions))
 - [ ] Clean Application Output: no debug messages, errors, and warnings
-- [ ] macOS yml if using new KF6 libraries
+- [ ] macOS ymls (Apple Silicon and Intel) if using new KF6 libraries
 
 Language & documentation
 - [ ] Language updates: no unfinished translation left, `.qm` files copied to `translations/`
@@ -73,11 +73,11 @@ Packaging
 - [ ] Windows AdvancedInstaller
 - [ ] Merge and push katalog_development to katalog_master (see [Merge to katalog_master](#merge-to-katalog_master))
 - [ ] Linux AppImages with GitHub Actions
-- [ ] macOS versions with GitHub Actions
+- [ ] macOS versions with GitHub Actions: Apple Silicon DMG and Intel DMG
 
 Publishing
 - [ ] Load packages to SourceForge
-- [ ] Define Default package for Linux, Windows, macOS
+- [ ] Define Default package for Linux, Windows, macOS (the default macOS package stays the Apple Silicon DMG)
 - [ ] Release publish (sourceforge)
 - [ ] Release publish (github)
 - [ ] Flatpak: update `tag` and `commit` in `packaging/linux/io.github.stephanecouturier.Katalog.yml`, then submit the update to Flathub
