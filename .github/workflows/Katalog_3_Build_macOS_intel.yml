@@ -223,9 +223,13 @@ jobs:
             git clone "$REPO_URL" "$component" --depth=1
           fi
 
+          # KIconThemes includes <BreezeIcons> unless told otherwise, and there is
+          # no Homebrew KF6 here to provide it (run 1 died on that include). The
+          # supported switch is USE_BreezeIcons=OFF; the icon theme is not
+          # bundled in packaged builds anyway (DPL-C4).
+          EXTRA_ARGS=""
           if [ "$component" = "kiconthemes" ]; then
-            sed -i.bak 's/find_package(KF6BreezeIcons/# PATCHED: find_package(KF6BreezeIcons/g' "$component/CMakeLists.txt"
-            sed -i.bak2 's/BreezeIcons::initIcons();/\/\/ PATCHED: BreezeIcons::initIcons();/g' "$component/src/kicontheme.cpp" 2>/dev/null || true
+            EXTRA_ARGS="-DUSE_BreezeIcons=OFF"
           fi
 
           # Qt6::GuiPrivate is linked without a find_package call (see the
@@ -239,7 +243,7 @@ jobs:
           fi
 
           LOG="$HOME/kf6-build/$component.log"
-          run_logged "$LOG" cmake -S "$component" -B "$component/build" "${CMAKE_ARGS[@]}"
+          run_logged "$LOG" cmake -S "$component" -B "$component/build" "${CMAKE_ARGS[@]}" $EXTRA_ARGS
           run_logged "$LOG" cmake --build "$component/build"
           run_logged "$LOG" cmake --install "$component/build"
           echo "✅ Built and installed $component"
