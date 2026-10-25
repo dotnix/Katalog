@@ -66,15 +66,19 @@ Katalog 2 remains available, with its [documentation](Katalog2), including the [
 |-------------------|-------------|-------------|
 | <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}><img src={require('/img/linux.png').default} width="40" /> GNU/Linux</div>         | 64bits, glibc 2.38+ <br/>32bits, glibc 2.35     | [FlatHub/Flatpak](https://flathub.org/en/apps/io.github.stephanecouturier.Katalog)<br/>[AppImage](https://sourceforge.net/projects/katalogg/files/) |
 | <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}><img src={require('/img/windows.png').default} width="40" /> Microsoft Windows</div> | 64bits:  Windows 10 & Windows 11    | [Installer](https://sourceforge.net/projects/katalogg/files/) <br/> [Portable](https://sourceforge.net/projects/katalogg/files/)       |
-| <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}><img src={require('/img/macos.png').default} width="40" /> Apple macOS</div>       | 15 (Sequoia) | [Installer](https://sourceforge.net/projects/katalogg/files/)<br/> [Portable](https://sourceforge.net/projects/katalogg/files/)       |
+| <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}><img src={require('/img/macos.png').default} width="40" /> Apple macOS</div>       | 15 (Sequoia), Apple Silicon or Intel | [Installer](https://sourceforge.net/projects/katalogg/files/)<br/> [Portable](https://sourceforge.net/projects/katalogg/files/)       |
 
 
 ### macOS Compatibility
 
 - **Minimum macOS version**: macOS 15 (Sequoia) or later
-- **Tested on**: macOS 15 (Sequoia), Apple Silicon
-- **Architecture**: Apple Silicon (M1/M2/M3) only. Intel Macs are **not** supported — Rosetta 2 translates Intel software to run on Apple Silicon, not the other way round, so there is no way to run this build on an Intel Mac.
-- **Build environment**: Built on macOS 15 (Sequoia) with Qt 6 and KDE Frameworks 6 (KF6), via Homebrew
+- **Tested on**: macOS 15 (Sequoia), Apple Silicon. The Intel package is awaiting confirmation from testers on an Intel Mac.
+- **Architecture**: there are two separate packages, and neither is universal:
+  - `Katalog_macos_v3.0.dmg` for Apple Silicon Macs (M1 and later).
+  - `Katalog_macos_intel_v3.0.dmg` for Intel Macs.
+
+  To choose, open Apple menu → *About This Mac*: *Chip* means Apple Silicon, *Processor* means Intel. The packages are not interchangeable: Rosetta 2 translates Intel software to run on Apple Silicon, not the other way round, so the Apple Silicon package cannot run on an Intel Mac.
+- **Build environment**: Built on macOS 15 (Sequoia). Apple Silicon: Qt 6 and KDE Frameworks 6 (KF6), via Homebrew. Intel: the official Qt 6 binaries (6.11.3) and KF6 6.22 built from source.
 
 **Important: the app is not code-signed or notarized.**
 

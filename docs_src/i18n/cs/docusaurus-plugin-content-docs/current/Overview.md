@@ -66,15 +66,19 @@ Katalog 2 zůstává k dispozici, s vlastní [dokumentací](Katalog2), včetně 
 |-------------------|-------------|-------------|
 | <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}><img src={require('/img/linux.png').default} width="40" /> GNU/Linux</div>         | 64bitový, glibc 2.38+ <br/>32bitový, glibc 2.35     | [FlatHub/Flatpak](https://flathub.org/en/apps/io.github.stephanecouturier.Katalog)<br/>[AppImage](https://sourceforge.net/projects/katalogg/files/) |
 | <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}><img src={require('/img/windows.png').default} width="40" /> Microsoft Windows</div> | 64bitový: Windows 10 a Windows 11    | [Instalátor](https://sourceforge.net/projects/katalogg/files/) <br/> [Přenosný](https://sourceforge.net/projects/katalogg/files/)       |
-| <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}><img src={require('/img/macos.png').default} width="40" /> Apple macOS</div>       | 15 (Sequoia) | [Instalátor](https://sourceforge.net/projects/katalogg/files/)<br/> [Přenosný](https://sourceforge.net/projects/katalogg/files/)       |
+| <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}><img src={require('/img/macos.png').default} width="40" /> Apple macOS</div>       | 15 (Sequoia), Apple Silicon nebo Intel | [Instalátor](https://sourceforge.net/projects/katalogg/files/)<br/> [Přenosný](https://sourceforge.net/projects/katalogg/files/)       |
 
 
 ### Kompatibilita s macOS
 
 - **Minimální verze macOS**: macOS 15 (Sequoia) nebo novější
-- **Testováno na**: macOS 15 (Sequoia), Apple Silicon
-- **Architektura**: pouze Apple Silicon (M1/M2/M3). Intelové Macy **nejsou** podporovány — Rosetta 2 překládá software pro Intel tak, aby běžel na Apple Silicon, nikoli naopak, takže tuto verzi nelze na Intelovém Macu spustit.
-- **Sestavovací prostředí**: sestaveno na macOS 15 (Sequoia) s Qt 6 a KDE Frameworks 6 (KF6) přes Homebrew
+- **Testováno na**: macOS 15 (Sequoia), Apple Silicon. Balíček pro Intel čeká na potvrzení od testerů na Intelovém Macu.
+- **Architektura**: existují dva samostatné balíčky a žádný z nich není univerzální:
+  - `Katalog_macos_v3.0.dmg` pro Macy s Apple Silicon (M1 a novější).
+  - `Katalog_macos_intel_v3.0.dmg` pro Intelové Macy.
+
+  Výběr: otevřete nabídku Apple → *O tomto Macu*: položka *Čip* znamená Apple Silicon, položka *Procesor* znamená Intel. Balíčky nejsou zaměnitelné: Rosetta 2 překládá software pro Intel tak, aby běžel na Apple Silicon, nikoli naopak, takže balíček pro Apple Silicon nelze na Intelovém Macu spustit.
+- **Sestavovací prostředí**: sestaveno na macOS 15 (Sequoia). Apple Silicon: Qt 6 a KDE Frameworks 6 (KF6) přes Homebrew. Intel: oficiální binární soubory Qt 6 (6.11.3) a KF6 6.22 sestavené ze zdrojových kódů.
 
 **Důležité: aplikace není podepsaná ani notarizovaná.**
 
