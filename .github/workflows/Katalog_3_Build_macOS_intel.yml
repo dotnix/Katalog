@@ -8,6 +8,13 @@ on:
         required: false
         default: 'v3.0-macos-intel'
 
+  # TEMPORARY: lets run 1 start from katalog_intel while this file is not yet on
+  # the default branch. Remove before merging.
+  push:
+    branches: [ katalog_intel ]
+    paths:
+      - '.github/workflows/Katalog_3_Build_macOS_intel.yml'
+
 jobs:
   build-macos-k3-intel:
     # macOS 15 Sequoia on an Intel runner (SpecK3Deployment DPL-C10). Homebrew
