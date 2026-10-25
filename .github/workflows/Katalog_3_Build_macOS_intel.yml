@@ -1,0 +1,682 @@
+name: Katalog 3 - Build macOS Intel
+#v3.0 run1 - Intel x86-64, official Qt binaries (SpecK3Deployment DPL-C10/C11)
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Version tag'
+        required: false
+        default: 'v3.0-macos-intel'
+
+jobs:
+  build-macos-k3-intel:
+    # macOS 15 Sequoia on an Intel runner (SpecK3Deployment DPL-C10). Homebrew
+    # publishes no Intel macOS bottles of Qt any more, so Qt comes from the
+    # official Qt binaries instead of being compiled here: a runner-built Qt is
+    # the defect class of DPL-C8 (3.0.beta3, broken PNG loading).
+    runs-on: macos-15-intel
+
+    env:
+      # Each pin appears once. KF 6.22 requires Qt >= 6.8; bump both together.
+      QT_VERSION: "6.11.3"
+      KF6_VERSION: "v6.22.0"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install Qt (official binaries)
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: ${{ env.QT_VERSION }}
+        host: 'mac'
+        target: 'desktop'
+        arch: 'clang_64'
+        modules: 'qtcharts qt5compat qtimageformats qtshadertools'
+        cache: true
+        cache-key-prefix: qt-mac-intel
+
+    - name: Assert Qt is the official x86_64-capable binary
+      run: |
+        set -eo pipefail
+        echo "QT_ROOT_DIR=${QT_ROOT_DIR}"
+
+        if [ ! -d "$QT_ROOT_DIR/lib/QtCore.framework" ]; then
+          echo "❌ $QT_ROOT_DIR/lib/QtCore.framework is missing - not an official Qt install"
+          exit 1
+        fi
+
+        QT_REPORTED=$("$QT_ROOT_DIR/bin/qmake" -query QT_VERSION)
+        if [ "$QT_REPORTED" != "$QT_VERSION" ]; then
+          echo "❌ qmake reports Qt $QT_REPORTED, expected $QT_VERSION"
+          exit 1
+        fi
+
+        QT_PREFIX=$(realpath "$("$QT_ROOT_DIR/bin/qmake" -query QT_INSTALL_PREFIX)")
+        if [ "$QT_PREFIX" != "$(realpath "$QT_ROOT_DIR")" ]; then
+          echo "❌ qmake prefix $QT_PREFIX is not $QT_ROOT_DIR"
+          exit 1
+        fi
+
+        QT_CORE_ARCHS=$(lipo -archs "$QT_ROOT_DIR/lib/QtCore.framework/Versions/A/QtCore")
+        echo "QtCore architectures: $QT_CORE_ARCHS"
+        if ! echo "$QT_CORE_ARCHS" | grep -qw "x86_64"; then
+          echo "❌ QtCore carries no x86_64 slice"
+          exit 1
+        fi
+
+        # A Homebrew Qt would shadow the official one (DPL-C10: never Homebrew).
+        BREW_QT=$(brew list --formula | grep -E '^(qt|qtbase|qt@6)$' || true)
+        if [ -n "$BREW_QT" ]; then
+          echo "❌ Homebrew Qt is installed ($BREW_QT) and could shadow the official Qt"
+          exit 1
+        fi
+
+        echo "✅ Qt $QT_VERSION official binaries, x86_64 slice present"
+        echo "- **Qt**: ${QT_VERSION} official binaries (x86_64 slice), not built on the runner" >> $GITHUB_STEP_SUMMARY
+
+    - name: Install build dependencies
+      run: |
+        set -eo pipefail
+        # cmake and ninja are preinstalled on the runner image.
+        if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
+        if ! command -v ninja >/dev/null 2>&1; then brew install ninja; fi
+
+        # LibIntl for KI18n. Homebrew has stopped building Intel bottles (Tier 3),
+        # so this may compile from source: minutes, and not Qt. Recorded, not
+        # enforced.
+        brew install gettext
+        POURED=$(brew info --json=v2 gettext | jq -r '.formulae[0].installed[0].poured_from_bottle')
+        echo "gettext poured from bottle: $POURED"
+
+        # Optional: the DMG step falls back to hdiutil.
+        brew install create-dmg || true
+
+    - name: Set environment
+      run: |
+        echo "KF6_PREFIX=$HOME/kf6-install" >> $GITHUB_ENV
+        echo "GETTEXT_PREFIX=$(brew --prefix gettext)" >> $GITHUB_ENV
+        echo "CMAKE_BUILD_PARALLEL_LEVEL=$(sysctl -n hw.ncpu)" >> $GITHUB_ENV
+
+    - name: Patch Qt for the GuiPrivate target
+      # kguiaddons and kcolorscheme link Qt6::GuiPrivate without calling
+      # find_package(Qt6GuiPrivate), and the official Qt binaries ship no
+      # Qt6GuiPrivateConfig.cmake. Same stub as the Linux AppImage workflow.
+      run: |
+        set -eo pipefail
+        echo "=== Qt GuiPrivate layout ==="
+        ls "$QT_ROOT_DIR/include/QtGui/" 2>/dev/null | head -20 || echo "(no include/QtGui)"
+        ls "$QT_ROOT_DIR/lib/QtGui.framework/Headers/" 2>/dev/null | head -20 || echo "(no framework Headers)"
+
+        # Private headers sit in <Headers>/<QT_VERSION>/QtGui/private. Find the
+        # directory that holds the <QT_VERSION> folder rather than assuming the
+        # include/ symlink layout.
+        PRIV_BASE=""
+        for base in "$QT_ROOT_DIR/include/QtGui" "$QT_ROOT_DIR/lib/QtGui.framework/Headers"; do
+          if [ -d "$base/$QT_VERSION" ]; then PRIV_BASE="$base/$QT_VERSION"; break; fi
+        done
+        if [ -z "$PRIV_BASE" ]; then
+          echo "❌ No $QT_VERSION private header directory under QtGui"
+          exit 1
+        fi
+        echo "Private headers: $PRIV_BASE"
+
+        PRIVATE_DIR="$QT_ROOT_DIR/lib/cmake/Qt6GuiPrivate"
+        PRIVATE_CFG="$PRIVATE_DIR/Qt6GuiPrivateConfig.cmake"
+        if [ -f "$PRIVATE_CFG" ]; then
+          echo "Qt6GuiPrivateConfig.cmake already present"
+        else
+          mkdir -p "$PRIVATE_DIR"
+          printf 'set(Qt6GuiPrivate_FOUND TRUE)\n'                                >  "$PRIVATE_CFG"
+          printf 'if(NOT TARGET Qt6::GuiPrivate)\n'                               >> "$PRIVATE_CFG"
+          printf '  add_library(Qt6::GuiPrivate INTERFACE IMPORTED GLOBAL)\n'     >> "$PRIVATE_CFG"
+          printf '  target_include_directories(Qt6::GuiPrivate INTERFACE\n'       >> "$PRIVATE_CFG"
+          printf '    "%s"\n'   "$PRIV_BASE"                                      >> "$PRIVATE_CFG"
+          printf '    "%s/QtGui")\n' "$PRIV_BASE"                                 >> "$PRIVATE_CFG"
+          printf 'endif()\n'                                                       >> "$PRIVATE_CFG"
+          echo "Created:"
+          cat "$PRIVATE_CFG"
+        fi
+
+    - name: Restore KF6 cache
+      id: kf6-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/kf6-install
+        # The Qt version is part of the key: KF6 uses Qt private API, so it must
+        # be rebuilt when Qt changes.
+        key: kf6-${{ env.KF6_VERSION }}-qt${{ env.QT_VERSION }}-macos-15-intel-x86_64-v1
+
+    - name: Build KF6 from source
+      if: steps.kf6-cache.outputs.cache-hit != 'true'
+      run: |
+        # Fail on the first problem. The Apple Silicon workflow pipes cmake
+        # through tail, which tests tail's exit code and lets a failed framework
+        # report success; there is no Homebrew fallback here, so every failure
+        # stops the job.
+        set -euo pipefail
+        echo "=== Building required KF6 components from source ==="
+
+        mkdir -p ~/kf6-build
+        cd ~/kf6-build
+
+        # Optional Python bindings: the build is told not to make them, and each
+        # python/ directory is blanked below as in the Linux workflow. Stubs
+        # cover frameworks that call find_package(Shiboken6) regardless.
+        FAKE_STUBS="$HOME/fake-cmake-stubs"
+        mkdir -p "$FAKE_STUBS/Shiboken6" "$FAKE_STUBS/PySide6"
+        printf 'set(Shiboken6_FOUND TRUE)\nset(Shiboken6_VERSION "6.8.0")\n' \
+          > "$FAKE_STUBS/Shiboken6/Shiboken6Config.cmake"
+        printf 'set(PySide6_FOUND TRUE)\nset(PySide6_VERSION "6.8.0")\n' \
+          > "$FAKE_STUBS/PySide6/PySide6Config.cmake"
+        export Shiboken6_DIR="$FAKE_STUBS/Shiboken6"
+        export PySide6_DIR="$FAKE_STUBS/PySide6"
+
+        CMAKE_ARGS=(
+          "-GNinja"
+          "-DCMAKE_BUILD_TYPE=Release"
+          "-DCMAKE_PREFIX_PATH=$KF6_PREFIX;$QT_ROOT_DIR;$GETTEXT_PREFIX"
+          "-DCMAKE_INSTALL_PREFIX=$KF6_PREFIX"
+          "-DCMAKE_OSX_ARCHITECTURES=x86_64"
+          "-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0"
+          "-DBUILD_TESTING=OFF"
+          "-DBUILD_QCH=OFF"
+          "-DQT_MAJOR_VERSION=6"
+          "-DBUILD_PYTHON_BINDINGS=OFF"
+        )
+
+        # K3 needs: KCoreAddons, KI18n, KConfig, KIconThemes, KArchive,
+        # KFileMetaData, Kirigami. The others are their dependencies.
+        KF6_COMPONENTS=(
+          "extra-cmake-modules"
+          "kcoreaddons" "ki18n" "kconfig" "kwidgetsaddons"
+          "kcodecs" "kguiaddons" "kcolorscheme" "kitemviews" "karchive"
+          "kconfigwidgets" "kiconthemes" "kfilemetadata" "kirigami"
+        )
+
+        # Run a command with its output in a log; show the log's tail on failure.
+        run_logged() {
+          local log="$1"; shift
+          if ! "$@" > "$log" 2>&1; then
+            echo "❌ Failed: $*"
+            tail -80 "$log"
+            exit 1
+          fi
+        }
+
+        for component in "${KF6_COMPONENTS[@]}"; do
+          echo "=== Building $component ==="
+          REPO_URL="https://invent.kde.org/frameworks/$component.git"
+
+          rm -rf "$component"
+          if ! git clone "$REPO_URL" "$component" --depth=1 --branch "$KF6_VERSION" 2>&1; then
+            echo "⚠️ Tag $KF6_VERSION not found for $component, using the default branch"
+            git clone "$REPO_URL" "$component" --depth=1
+          fi
+
+          if [ "$component" = "kiconthemes" ]; then
+            sed -i.bak 's/find_package(KF6BreezeIcons/# PATCHED: find_package(KF6BreezeIcons/g' "$component/CMakeLists.txt"
+            sed -i.bak2 's/BreezeIcons::initIcons();/\/\/ PATCHED: BreezeIcons::initIcons();/g' "$component/src/kicontheme.cpp" 2>/dev/null || true
+          fi
+
+          # Qt6::GuiPrivate is linked without a find_package call (see the
+          # "Patch Qt" step); prepend it to the framework's src/CMakeLists.txt.
+          if [ -f "$component/src/CMakeLists.txt" ]; then
+            { printf 'find_package(Qt6GuiPrivate QUIET CONFIG)\n'; cat "$component/src/CMakeLists.txt"; } > "$component/src.cmake.patched"
+            mv "$component/src.cmake.patched" "$component/src/CMakeLists.txt"
+          fi
+          if [ -f "$component/python/CMakeLists.txt" ]; then
+            printf '# Python bindings disabled in CI\n' > "$component/python/CMakeLists.txt"
+          fi
+
+          LOG="$HOME/kf6-build/$component.log"
+          run_logged "$LOG" cmake -S "$component" -B "$component/build" "${CMAKE_ARGS[@]}"
+          run_logged "$LOG" cmake --build "$component/build"
+          run_logged "$LOG" cmake --install "$component/build"
+          echo "✅ Built and installed $component"
+          rm -rf "$component"
+        done
+
+    - name: Verify KF6 and locate the Kirigami QML directory
+      run: |
+        set -eo pipefail
+        for fw in KF6CoreAddons KF6Config KF6FileMetaData KF6I18n KF6Archive; do
+          if [ ! -d "$KF6_PREFIX/lib/cmake/$fw" ]; then
+            echo "❌ $KF6_PREFIX/lib/cmake/$fw is missing"
+            exit 1
+          fi
+        done
+
+        # With KF6 in its own prefix, Kirigami's QML module does not land in
+        # Qt's QML directory; macdeployqt must be told where to look.
+        KIRIGAMI_QMLDIR=$(find "$KF6_PREFIX" -path '*/org/kde/kirigami/qmldir' | head -1)
+        if [ -z "$KIRIGAMI_QMLDIR" ]; then
+          echo "❌ Kirigami's QML module is not under $KF6_PREFIX"
+          exit 1
+        fi
+        # <root>/org/kde/kirigami/qmldir -> <root>
+        KF6_QML_DIR=$(dirname "$(dirname "$(dirname "$(dirname "$KIRIGAMI_QMLDIR")")")")
+        echo "KF6_QML_DIR=$KF6_QML_DIR" >> $GITHUB_ENV
+        echo "✅ KF6 present; Kirigami QML root: $KF6_QML_DIR"
+        echo "- **KF6**: ${KF6_VERSION#v} built from source (x86_64)" >> $GITHUB_STEP_SUMMARY
+
+    - name: Set version information
+      run: |
+        # Read the full release string (it carries any beta/alpha suffix); project()
+        # holds only major.minor, which would silently drop the pre-release marker.
+        KATALOG_VERSION=$(grep -E '^set\(KATALOG_VERSION_STRING' qt_quick/CMakeLists.txt \
+          | sed -E 's/.*"([^"]+)".*/\1/')
+        if [ -z "$KATALOG_VERSION" ]; then
+          KATALOG_VERSION="3.x"
+        fi
+        echo "ARTIFACT_BASE=Katalog_macos_intel_v${KATALOG_VERSION}" >> $GITHUB_ENV
+        echo "KATALOG_VERSION=${KATALOG_VERSION}" >> $GITHUB_ENV
+        echo "Building artifact: Katalog_macos_intel_v${KATALOG_VERSION}.dmg"
+
+    - name: Build Katalog 3
+      run: |
+        set -eo pipefail
+        mkdir build && cd build
+
+        echo "=== Running CMake configuration ==="
+        cmake .. \
+          -GNinja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH="$KF6_PREFIX;$QT_ROOT_DIR;$GETTEXT_PREFIX" \
+          -DQt6_DIR="$QT_ROOT_DIR/lib/cmake/Qt6" \
+          -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+          -DBUILD_TESTS=OFF \
+          -DBUILD_QT_WIDGETS=OFF \
+          -DBUILD_QT_QUICK=ON \
+          -DCMAKE_INSTALL_PREFIX=/Applications
+
+        # The Qt actually configured must be the official one (DPL-C11 a).
+        QT6_DIR_CACHED=$(grep '^Qt6_DIR' CMakeCache.txt | cut -d= -f2)
+        echo "Configured Qt6_DIR: $QT6_DIR_CACHED"
+        case "$QT6_DIR_CACHED" in
+          "$QT_ROOT_DIR"/*) echo "✅ Qt6_DIR resolves under the official Qt install" ;;
+          *)
+            echo "❌ Qt6_DIR is not under $QT_ROOT_DIR - another Qt was picked up"
+            exit 1
+            ;;
+        esac
+
+        # Build translations
+        ninja translations_lrelease || ninja Katalog3_lrelease || echo "Translation build skipped"
+
+        # Build main application
+        if ninja; then
+          echo "✅ Build successful!"
+        else
+          echo "❌ Build failed"
+          exit 1
+        fi
+
+        echo "=== Build output ==="
+        find . -name "Katalog*" -o -name "*.app" | sort
+
+        if [ -f "qt_quick/Katalog.app/Contents/MacOS/Katalog" ]; then
+          echo "✅ Katalog3 app bundle found"
+        else
+          echo "❌ Katalog3 app bundle not found"
+          exit 1
+        fi
+
+        # The official Qt frameworks are universal, so x86_64 is enforced, not
+        # assumed (DPL-C10): anything but exactly x86_64 rejects the build.
+        ARCHS=$(lipo -archs qt_quick/Katalog.app/Contents/MacOS/Katalog 2>/dev/null || echo "unknown")
+        echo "=== Binary architecture: ${ARCHS} ==="
+        echo "### macOS Intel build" >> $GITHUB_STEP_SUMMARY
+        if [ "$ARCHS" != "x86_64" ]; then
+          echo "- **Architecture**: ${ARCHS} - build rejected" >> $GITHUB_STEP_SUMMARY
+          echo "❌ Expected exactly x86_64, got: ${ARCHS}"
+          exit 1
+        fi
+        echo "- **Architecture**: x86_64 (Intel)" >> $GITHUB_STEP_SUMMARY
+        echo "- Apple Silicon Macs: use the arm64 package" >> $GITHUB_STEP_SUMMARY
+
+    - name: Deploy Qt6 dependencies
+      run: |
+        set -eo pipefail
+        cd build
+        QT_DEPLOY_TOOL="$QT_ROOT_DIR/bin/macdeployqt"
+        if [ ! -x "$QT_DEPLOY_TOOL" ]; then
+          echo "❌ $QT_DEPLOY_TOOL not found - the Qt install is wrong"
+          exit 1
+        fi
+
+        # -qmldir is NOT optional for a Qt Quick app: without it no QML module
+        # is bundled and the app dies at startup. -qmlimport adds the KF6 prefix,
+        # where Kirigami's QML module lives (it is not under Qt's QML directory),
+        # and -libpath lets macdeployqt resolve the KF6 libraries.
+        "$QT_DEPLOY_TOOL" qt_quick/Katalog.app \
+          -qmldir=../qt_quick \
+          -qmlimport="$KF6_QML_DIR" \
+          -libpath="$KF6_PREFIX/lib" \
+          -verbose=1 \
+          || echo "macdeployqt completed with warnings"
+
+        QML_DIR="qt_quick/Katalog.app/Contents/Resources/qml"
+        if [ -d "$QML_DIR" ]; then
+          echo "✅ QML modules bundled: $(find "$QML_DIR" -name '*.dylib' | wc -l | tr -d ' ') plugin(s)"
+          echo "- **QML modules**: bundled" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ No QML modules in the bundle - the app cannot load its interface"
+          echo "- **QML modules**: MISSING - build rejected" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+        # Kirigami colour theme for the Fusion style (DPL-F5 / DPL-C6). Without
+        # it Kirigami falls back to fixed Breeze Light colours and the app
+        # ignores the system's dark mode. Copied before the bundle is signed.
+        KIRIGAMI_DIR="$QML_DIR/org/kde/kirigami"
+        if [ -d "$KIRIGAMI_DIR" ]; then
+          mkdir -p "$KIRIGAMI_DIR/styles/Fusion"
+          cp "$GITHUB_WORKSPACE/packaging/Theme.qml" "$KIRIGAMI_DIR/styles/Fusion/Theme.qml"
+          echo "✅ Kirigami Fusion Theme.qml bundled"
+          echo "- **Kirigami colour theme**: bundled" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ $KIRIGAMI_DIR is missing - Theme.qml cannot be bundled"
+          echo "- **Kirigami colour theme**: MISSING - build rejected" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+        echo "=== Bundled Qt plugins ==="
+        ls -R qt_quick/Katalog.app/Contents/PlugIns 2>/dev/null || echo "(no PlugIns directory)"
+
+        # Katalog cannot open any collection without the SQLite driver.
+        SQLITE_PLUGIN="qt_quick/Katalog.app/Contents/PlugIns/sqldrivers/libqsqlite.dylib"
+        if [ -f "$SQLITE_PLUGIN" ]; then
+          echo "✅ SQLite driver bundled"
+          echo "- **SQLite driver**: bundled" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ $SQLITE_PLUGIN is missing - no collection could be opened"
+          echo "- **SQLite driver**: MISSING - build rejected" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+        # Without the Cocoa platform plugin a Qt app aborts at startup.
+        COCOA_PLUGIN="qt_quick/Katalog.app/Contents/PlugIns/platforms/libqcocoa.dylib"
+        if [ -f "$COCOA_PLUGIN" ]; then
+          echo "✅ Cocoa platform plugin bundled"
+          echo "- **Platform plugin**: bundled" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ $COCOA_PLUGIN is missing - the app would not start on a user's Mac"
+          echo "- **Platform plugin**: MISSING - build rejected" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+    - name: Thin universal binaries to x86_64
+      run: |
+        set -eo pipefail
+        cd build
+        APP="qt_quick/Katalog.app"
+
+        # The official Qt frameworks are universal (x86_64 + arm64). The arm64
+        # half cannot run on an Intel Mac, so it is removed before signing. This
+        # roughly halves the Qt share of the DMG.
+        SIZE_BEFORE=$(du -sh "$APP" | awk '{print $1}')
+        THINNED=0
+        for f in $(find "$APP" -type f); do
+          case "$(file -b "$f")" in
+            *Mach-O*) ;;
+            *) continue ;;
+          esac
+          ARCHS=$(lipo -archs "$f" 2>/dev/null || true)
+          if [ "$(echo "$ARCHS" | wc -w | tr -d ' ')" -gt 1 ]; then
+            lipo "$f" -thin x86_64 -output "$f.thin"
+            chmod "$(stat -f %Lp "$f")" "$f.thin"
+            mv "$f.thin" "$f"
+            THINNED=$((THINNED + 1))
+          fi
+        done
+        SIZE_AFTER=$(du -sh "$APP" | awk '{print $1}')
+        echo "Thinned $THINNED file(s): $SIZE_BEFORE -> $SIZE_AFTER"
+        echo "- **Bundle size**: $SIZE_BEFORE before thinning, $SIZE_AFTER after ($THINNED binaries thinned)" >> $GITHUB_STEP_SUMMARY
+
+    - name: Verify the bundle is self-contained
+      run: |
+        set -eo pipefail
+        cd build
+        APP="qt_quick/Katalog.app"
+
+        # Every Mach-O file in the bundle is asked what it links against. A
+        # dependency under /usr/local (Homebrew on Intel), /opt/homebrew,
+        # /opt/local or /Users/ (the Qt and KF6 install directories) exists on
+        # this runner and NOT on a user's Mac, so the app would fail to start
+        # there with a dyld error. @rpath, @executable_path and @loader_path
+        # resolve inside the bundle; /usr/lib and /System/Library are macOS.
+        echo "=== Checking linked libraries ==="
+        BAD_FILES=0
+        BAD_ARCH=0
+        CHECKED=0
+        for f in $(find "$APP" -type f); do
+          case "$(file -b "$f")" in
+            *Mach-O*) CHECKED=$((CHECKED + 1)) ;;
+            *) continue ;;
+          esac
+
+          # Every bundled binary must run on an Intel Mac.
+          if ! lipo -archs "$f" 2>/dev/null | grep -qw "x86_64"; then
+            echo "❌ ${f#$APP/} carries no x86_64 slice"
+            BAD_ARCH=$((BAD_ARCH + 1))
+          fi
+
+          # A library's OWN install name (LC_ID_DYLIB) is printed by otool -L
+          # first and is left as the original path by macdeployqt. That is
+          # harmless: dyld resolves through the REFERENCING binary. Only genuine
+          # dependencies are checked, so the id is excluded first.
+          OWN_ID=$(otool -D "$f" 2>/dev/null | tail -n +2 | head -1)
+          DEPS=$(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}')
+          if [ -n "$OWN_ID" ]; then
+            DEPS=$(echo "$DEPS" | grep -v -x -F "$OWN_ID" || true)
+          fi
+          REFS=$(echo "$DEPS" | grep -E '^(/opt/homebrew|/usr/local|/Users/|/opt/local)' || true)
+          if [ -n "$REFS" ]; then
+            echo "❌ ${f#$APP/} depends on paths outside the bundle:"
+            echo "$REFS" | sed 's/^/       /'
+            BAD_FILES=$((BAD_FILES + 1))
+          fi
+        done
+
+        echo "Mach-O files examined: $CHECKED"
+        # A path mistake would examine nothing and report success, so an empty
+        # sweep is itself a failure.
+        if [ "$CHECKED" -lt 10 ]; then
+          echo "❌ Only $CHECKED Mach-O file(s) examined - the bundle path is wrong, this is not a clean result"
+          exit 1
+        fi
+
+        if [ ! -d "$APP/Contents/Frameworks/QtCore.framework" ]; then
+          echo "❌ QtCore.framework is not in the bundle"
+          exit 1
+        fi
+        if ! ls "$APP"/Contents/Frameworks/libKF6CoreAddons*.dylib >/dev/null 2>&1; then
+          echo "❌ libKF6CoreAddons is not in the bundle"
+          exit 1
+        fi
+
+        if [ "$BAD_ARCH" -ne 0 ]; then
+          echo "- **Architecture of bundled binaries**: $BAD_ARCH without x86_64 - build rejected" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+        if [ "$BAD_FILES" -eq 0 ]; then
+          echo "✅ Every linked library resolves inside the bundle or in macOS itself ($CHECKED files)"
+          echo "- **Self-contained**: yes ($CHECKED binaries checked)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ $BAD_FILES file(s) reference libraries that only exist on this build machine."
+          echo "   This DMG would not start on a user's Mac."
+          echo "- **Self-contained**: NO - $BAD_FILES file(s) link outside the bundle" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+    - name: Sign the bundle (ad-hoc) and verify it
+      run: |
+        set -eo pipefail
+        cd build
+        APP="qt_quick/Katalog.app"
+
+        # An ad-hoc signature ("-" = no identity, no Apple account). On Intel a
+        # signature is not required to execute, but a broken or absent one still
+        # makes Gatekeeper say "Katalog is damaged and can't be opened", which
+        # reads as unfixable, whereas a valid ad-hoc one says "unverified
+        # developer", which the documented right-click-Open works around. Also
+        # required after thinning and after macdeployqt rewrote install names.
+        # It is NOT notarization.
+        echo "=== Signing ==="
+        codesign --force --deep --sign - --timestamp=none "$APP"
+
+        echo "=== Verifying ==="
+        if codesign --verify --deep --strict --verbose=2 "$APP" 2>&1; then
+          echo "✅ Signature valid for the bundle and everything nested in it"
+          echo "- **Code signature**: valid (ad-hoc, not notarized)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ The bundle does not carry a valid signature"
+          echo "- **Code signature**: INVALID - build rejected" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+        # Reported, never enforced: this fails by definition until the app is
+        # notarized with a paid Developer ID.
+        echo "=== Gatekeeper assessment (expected to fail without notarization) ==="
+        spctl --assess --type execute --verbose=4 "$APP" 2>&1 || true
+
+    - name: Smoke test - start the app without Qt, KF6 or Homebrew
+      run: |
+        cd build
+        APP="qt_quick/Katalog.app"
+
+        # The previous steps read what the binaries declare; this one runs the
+        # app. The Qt install, the KF6 prefix and Homebrew's Cellar/opt are moved
+        # aside first, because otherwise a library missing from the bundle would
+        # quietly resolve from them - they exist here and on no user's Mac.
+        # /usr/local itself cannot be moved wholesale, so Cellar and opt go, and
+        # Homebrew's symlinks in /usr/local/lib then dangle.
+        HIDDEN_QT="${QT_ROOT_DIR}.hidden"
+        HIDDEN_KF6="${KF6_PREFIX}.hidden"
+
+        restore_all() {
+          [ -d "$HIDDEN_QT" ] && mv "$HIDDEN_QT" "$QT_ROOT_DIR"
+          [ -d "$HIDDEN_KF6" ] && mv "$HIDDEN_KF6" "$KF6_PREFIX"
+          [ -d /usr/local/Cellar.hidden ] && sudo mv /usr/local/Cellar.hidden /usr/local/Cellar
+          [ -d /usr/local/opt.hidden ] && sudo mv /usr/local/opt.hidden /usr/local/opt
+          return 0
+        }
+        # KF6_PREFIX must exist again at the end: the cache action saves it.
+        trap restore_all EXIT
+
+        mv "$QT_ROOT_DIR" "$HIDDEN_QT"
+        mv "$KF6_PREFIX" "$HIDDEN_KF6"
+        [ -d /usr/local/Cellar ] && sudo mv /usr/local/Cellar /usr/local/Cellar.hidden
+        [ -d /usr/local/opt ] && sudo mv /usr/local/opt /usr/local/opt.hidden
+        echo "=== Qt, KF6 and Homebrew hidden, starting the app ==="
+
+        # install-qt-action exports QT_PLUGIN_PATH and QML2_IMPORT_PATH; left
+        # set, plugins and QML would resolve from the Qt install instead of the
+        # bundle.
+        set +e
+        env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH \
+          "$APP/Contents/MacOS/Katalog" > launch.log 2>&1 &
+        APP_PID=$!
+        sleep 20
+        if kill -0 "$APP_PID" 2>/dev/null; then
+          STILL_RUNNING=1
+          kill "$APP_PID" 2>/dev/null
+        else
+          STILL_RUNNING=0
+        fi
+        wait "$APP_PID" 2>/dev/null
+        set -e
+
+        restore_all
+        echo "=== Qt, KF6 and Homebrew restored ==="
+
+        echo "=== Application output ==="
+        cat launch.log || true
+
+        # The libpng mismatch line means every PNG fails to load: the app runs
+        # but shows no icons and no combo-box arrows (3.0.beta3, DPL-C9).
+        if grep -qE "libpng warning: Application built with" launch.log; then
+          echo "❌ Qt and the bundled libpng do not match: no PNG image will load."
+          echo "- **Images load**: NO - libpng mismatch, see the log" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+        # A dyld failure, missing QML module or unloadable plugin stops the app
+        # as dead as a missing library. "Driver not loaded" is deliberately NOT
+        # listed: with no settings file and no collection, Database::initialize
+        # returns early and every later query reports it (first-run behaviour).
+        if grep -qE "Library not loaded|dyld|image not found|failed to load component|plugin .* not found|no Qt platform plugin could be initialized" launch.log; then
+          echo "❌ The app could not start with only the bundle to rely on."
+          echo "- **Starts without Qt, KF6 or Homebrew**: NO - see the log" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+        echo "- **Images load**: yes (no libpng mismatch)" >> $GITHUB_STEP_SUMMARY
+        if [ "$STILL_RUNNING" -eq 1 ]; then
+          echo "✅ The app started and was still running after 20s with no Qt, KF6 or Homebrew present"
+          echo "- **Starts without Qt, KF6 or Homebrew**: yes" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ The app exited early, but not with a library error - see the output above."
+          echo "   Inconclusive rather than failed: a headless runner can stop a GUI app for reasons"
+          echo "   that have nothing to do with the bundle."
+          echo "- **Starts without Qt, KF6 or Homebrew**: inconclusive - exited early, no library error" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Create DMG
+      run: |
+        cd build
+        DMG_NAME="${ARTIFACT_BASE}.dmg"
+        mkdir dmg_temp
+        cp -R qt_quick/Katalog.app dmg_temp/
+
+        if command -v create-dmg >/dev/null 2>&1; then
+          create-dmg \
+            --volname "Katalog $KATALOG_VERSION (Intel)" \
+            --window-pos 200 120 \
+            --window-size 600 300 \
+            --icon-size 100 \
+            --icon "Katalog.app" 175 120 \
+            --hide-extension "Katalog.app" \
+            --app-drop-link 425 120 \
+            "$DMG_NAME" \
+            "dmg_temp/" || true
+        fi
+
+        # Fallback if create-dmg failed or not installed
+        if [ ! -f "$DMG_NAME" ]; then
+          hdiutil create -srcfolder qt_quick/Katalog.app -format UDZO -o "$DMG_NAME"
+        fi
+
+        echo "DMG created: $DMG_NAME"
+        ls -lh *.dmg
+
+    - name: Upload DMG as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ARTIFACT_BASE }}_dmg
+        path: build/${{ env.ARTIFACT_BASE }}.dmg
+        retention-days: 30
+
+    - name: Upload App Bundle as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ARTIFACT_BASE }}_bundle
+        path: build/qt_quick/Katalog.app
+        retention-days: 7
+
+    - name: Summary
+      run: |
+        echo "## Katalog 3 macOS Intel Build" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version**: ${{ env.KATALOG_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **File**: ${{ env.ARTIFACT_BASE }}.dmg" >> $GITHUB_STEP_SUMMARY
+        echo "- **Runner**: macos-15-intel" >> $GITHUB_STEP_SUMMARY
+        echo "- **Qt**: ${{ env.QT_VERSION }} (official binaries)" >> $GITHUB_STEP_SUMMARY
+        echo "- **KF6**: ${{ env.KF6_VERSION }} (built from source)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Architecture**: x86_64" >> $GITHUB_STEP_SUMMARY
+        echo "- **Minimum macOS**: 15 (Sequoia)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: 📦 Available as build artifact" >> $GITHUB_STEP_SUMMARY
